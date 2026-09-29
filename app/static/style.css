@@ -92,3 +92,15 @@ summary { cursor: pointer; color: var(--accent); }
 .bad { color: var(--bad); }
 .ok { color: var(--ok); }
 footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px; }
+.rr-changed {
+  display: inline-block;
+  background: var(--warn, #e7b23f);
+  color: #1a1a1a;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-right: 4px;
+  font-size: 10px;
+  font-weight: 700;
+}
+#rerouteCard label { color: var(--muted); font-size: 12px; margin-right: 18px; }
+#rerouteCard input[type="text"] { margin-left: 6px; }

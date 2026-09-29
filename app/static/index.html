@@ -65,6 +65,48 @@
     <div id="statusBanner"></div>
     <div id="resultBody"></div>
   </section>
+
+  <section id="rerouteCard" class="card hidden">
+    <h2>6. 低扰动改线（从上方 optimal 审计记录发起）</h2>
+    <p class="hint">服务冻结来源<b>站点、管路顺序、原流量与本次覆盖项</b>；先最小化
+      <b>修订成本</b>，再只在成本最优集合中最小化
+      <b>Σ|新流量−原流量|</b>，仍并列时按<b>原管路标识序</b>的流量向量裁决
+      （整数有序费用对，无加权大数、无浮点）。至多 6 条覆盖，每条可给新的
+      整数 lo / hi / cost。</p>
+    <div class="row">
+      <label>来源审计标识
+        <input id="rrSourceId" type="text" readonly
+               placeholder="先在第 1 步填写标识并取得 optimal 结果">
+      </label>
+      <label>本次改线审计标识
+        <input id="rrAuditId" type="text" maxlength="64"
+               placeholder="例如 reroute-A1（字母/数字/._-）">
+      </label>
+    </div>
+    <div class="table-wrap">
+      <table id="rrChangeTable">
+        <thead><tr>
+          <th>管路标识</th><th>新 lo（留空不改）</th>
+          <th>新 hi（留空不改）</th><th>新 cost（留空不改）</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="row">
+      <button type="button" id="rrAdd">＋ 增加覆盖项（至多 6 条）</button>
+      <button type="button" id="rrSubmit" class="primary">提交低扰动改线</button>
+    </div>
+    <details>
+      <summary>按标识读取已存改线审计</summary>
+      <div class="row">
+        <input id="rrFetchId" type="text" maxlength="64"
+               placeholder="改线审计标识，例如 reroute-A1">
+        <button type="button" id="rrFetch">读取改线审计</button>
+      </div>
+    </details>
+    <div id="rrBanner"></div>
+    <div id="rrBody"></div>
+  </section>
 </main>
 
 <footer>后端：下界消去 → Dinic 可行流 → Bellman-Ford 负环消除（精确整数，不限轮次）</footer>

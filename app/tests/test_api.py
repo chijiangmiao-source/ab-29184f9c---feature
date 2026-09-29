@@ -148,5 +148,140 @@ class ApiTest(unittest.TestCase):
         self.assertIn("S", body["reachable_from_source"])
 
 
+class RerouteApiTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever,
+                                      daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+
+    def req(self, method, path, body=None, headers=None):
+        url = f"http://127.0.0.1:{self.port}{path}"
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method,
+                                     headers=headers or {})
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req) as resp:
+                raw = resp.read().decode()
+                ctype = resp.headers.get("Content-Type", "")
+                return resp.status, (json.loads(raw)
+                                     if "application/json" in ctype else raw)
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode())
+
+    def _source(self, aid="rr-src-1"):
+        s, b = self.req("POST", "/api/solve", SAMPLE, {"X-Audit-Id": aid})
+        self.assertEqual(s, 200)
+        return b["result"]
+
+    def test_reroute_ok_evidence_and_replay_conflict(self):
+        src = self._source("rr-src-1")
+        body = {"source_audit_id": "rr-src-1",
+                "changes": [{"id": "p1", "cost": -5}]}
+        s, b = self.req("POST", "/api/reroute", body,
+                        {"X-Audit-Id": "rr-run-1"})
+        self.assertEqual(s, 200)
+        r = b["result"]
+        self.assertEqual(r["status"], "optimal")
+        self.assertEqual(r["kind"], "reroute")
+        self.assertFalse(b["replayed"])
+        # 独立复算
+        flows = {f["id"]: f["flow"] for f in r["flows"]}
+        cost = sum(flows[p["id"]] * (-5 if p["id"] == "p1" else p["cost"])
+                   for p in SAMPLE["pipes"])
+        self.assertEqual(cost, r["objectives"]["revised_cost"])
+        for e in r["edges"]:
+            for a in e["residual"]:
+                self.assertGreaterEqual(a["lex_reduced_cost"][0], 0)
+                self.assertGreaterEqual(tuple(a["lex_reduced_cost"]), (0, 0))
+        # 重放
+        s2, b2 = self.req("POST", "/api/reroute", body,
+                          {"X-Audit-Id": "rr-run-1"})
+        self.assertEqual(s2, 200)
+        self.assertTrue(b2["replayed"])
+        self.assertEqual(b2["result"], r)
+        # 冲突
+        s3, b3 = self.req("POST", "/api/reroute",
+                          {"source_audit_id": "rr-src-1",
+                           "changes": [{"id": "p1", "cost": 9}]},
+                          {"X-Audit-Id": "rr-run-1"})
+        self.assertEqual(s3, 409)
+        # 记录可读回，且来源载荷随记录持久化（冻结来源网络）
+        s4, b4 = self.req("GET", "/api/records/rr-src-1")
+        self.assertEqual(s4, 200)
+        self.assertEqual(b4["payload"]["pipes"], SAMPLE["pipes"])
+        self.assertEqual(b4["result"]["total_cost"], src["total_cost"])
+
+    def test_reroute_source_missing_404(self):
+        s, b = self.req("POST", "/api/reroute",
+                        {"source_audit_id": "rr-missing", "changes": []})
+        self.assertEqual(s, 404)
+        self.assertEqual(b["loc"], "source_audit_id")
+
+    def test_reroute_source_not_optimal_409(self):
+        bad_cut = {"stations": [{"id": "S", "balance": 5},
+                                {"id": "T", "balance": -5}],
+                   "pipes": [{"id": "x", "from": "S", "to": "T",
+                              "lo": 0, "hi": 2, "cost": 1}]}
+        s, _ = self.req("POST", "/api/solve", bad_cut,
+                        {"X-Audit-Id": "rr-inf-1"})
+        self.assertEqual(s, 200)
+        s, b = self.req("POST", "/api/reroute",
+                        {"source_audit_id": "rr-inf-1", "changes": []})
+        self.assertEqual(s, 409)
+        self.assertEqual(b["loc"], "source_audit_id")
+
+    def test_reroute_infeasible_coverage_persists(self):
+        self._source("rr-src-2")
+        s, b = self.req("POST", "/api/reroute",
+                        {"source_audit_id": "rr-src-2",
+                         "changes": [{"id": "p4", "hi": 0}]},
+                        {"X-Audit-Id": "rr-infcover-1"})
+        self.assertEqual(s, 200)
+        r = b["result"]
+        self.assertEqual(r["status"], "infeasible")
+        self.assertTrue(r["unmet_demand"])
+        self.assertEqual(r["frozen"]["pipe_order"],
+                         [p["id"] for p in SAMPLE["pipes"]])
+        # 不可行改线记录同样可重放
+        s2, b2 = self.req("POST", "/api/reroute",
+                          {"source_audit_id": "rr-src-2",
+                           "changes": [{"id": "p4", "hi": 0}]},
+                          {"X-Audit-Id": "rr-infcover-1"})
+        self.assertEqual(s2, 200)
+        self.assertTrue(b2["replayed"])
+        self.assertEqual(b2["result"]["status"], "infeasible")
+
+    def test_reroute_bad_changes_located(self):
+        self._source("rr-src-3")
+        for changes, loc in [
+            ([{"id": "zzz", "hi": 1}], "changes[0].id"),
+            ([{"id": "p1", "hi": -100}], "changes[0].hi"),
+            ([{"id": "p1", "cost": 1.0}], "changes[0].cost"),
+            ([{"id": f"p{i}"} for i in range(1, 8)], "changes"),
+        ]:
+            s, b = self.req("POST", "/api/reroute",
+                            {"source_audit_id": "rr-src-3", "changes": changes})
+            self.assertEqual(s, 400, f"{changes} -> {b}")
+            self.assertEqual(b["loc"], loc, f"{changes} -> {b}")
+
+    def test_reroute_without_audit_id_returns_bare(self):
+        self._source("rr-src-4")
+        s, b = self.req("POST", "/api/reroute",
+                        {"source_audit_id": "rr-src-4", "changes": []})
+        self.assertEqual(s, 200)
+        self.assertEqual(b["status"], "optimal")
+        self.assertNotIn("result", b)
+        self.assertNotIn("replayed", b)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

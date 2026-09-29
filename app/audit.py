@@ -101,6 +101,7 @@ class AuditStore:
                 "payload_fingerprint": fp,
                 "status": status,
                 "replayed": False,
+                "payload": payload,
                 "result": result,
             }
             self._records[audit_id] = rec
