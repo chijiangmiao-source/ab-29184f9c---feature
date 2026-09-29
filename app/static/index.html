@@ -65,6 +65,42 @@
     <div id="statusBanner"></div>
     <div id="resultBody"></div>
   </section>
+
+  <section id="rerouteCard" class="card hidden">
+    <h2>6. 低扰动改线（从上方 optimal 来源审计记录发起）</h2>
+    <p class="hint" id="rerouteHint">
+      在<b>相同供需</b>下按至多 6 条覆盖项改线：先求修订网络最小费用可行流，
+      再在该成本最优集合中最小化对来源流量的总绝对改变量，平局按原管路标识序的
+      流量向量裁决。留空的字段表示该项不覆盖。来源站点、管路顺序、原流量与覆盖项
+      均在服务端冻结。
+    </p>
+    <div class="row">
+      <span>改线审计标识（必填）：</span>
+      <input id="rerouteAuditId" type="text" maxlength="64"
+             placeholder="例如 reroute-2026-09-29-A（字母/数字/._-）">
+      <button type="button" id="loadRerouteRec">按标识读取改线审计</button>
+    </div>
+    <div class="table-wrap">
+      <table id="modTable">
+        <thead><tr>
+          <th>管路标识</th><th>新下界 lo（留空=不覆盖）</th>
+          <th>新上界 hi（留空=不覆盖）</th><th>新单位成本 cost（留空=不覆盖）</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="row">
+      <button type="button" id="addMod">＋ 增加覆盖项（至多 6 条）</button>
+      <button type="button" id="submitReroute" class="primary">经真实 API 发起改线</button>
+    </div>
+    <pre id="reroutePreview" class="preview"></pre>
+  </section>
+
+  <section id="rerouteResultCard" class="card hidden">
+    <h2>7. 改线结果与两级复算证据</h2>
+    <div id="rerouteBanner"></div>
+    <div id="rerouteBody"></div>
+  </section>
 </main>
 
 <footer>后端：下界消去 → Dinic 可行流 → Bellman-Ford 负环消除（精确整数，不限轮次）</footer>

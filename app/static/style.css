@@ -91,4 +91,6 @@ details { margin-top: 10px; }
 summary { cursor: pointer; color: var(--accent); }
 .bad { color: var(--bad); }
 .ok { color: var(--ok); }
+td.changed, .changed { background: rgba(231,178,63,.18); font-weight: 700; }
+tr.unchanged td { color: var(--muted); }
 footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px; }

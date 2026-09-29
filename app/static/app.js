@@ -11,6 +11,16 @@ const resultCard = document.querySelector("#resultCard");
 const statusBanner = document.querySelector("#statusBanner");
 const resultBody = document.querySelector("#resultBody");
 
+const rerouteCard = document.querySelector("#rerouteCard");
+const modBody = document.querySelector("#modTable tbody");
+const reroutePreview = document.querySelector("#reroutePreview");
+const rerouteResultCard = document.querySelector("#rerouteResultCard");
+const rerouteBanner = document.querySelector("#rerouteBanner");
+const rerouteBody = document.querySelector("#rerouteBody");
+
+// 最近一次求解（改线来源）：必须带稳定审计标识、状态 optimal
+let lastSource = null;
+
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -249,10 +259,284 @@ async function submit() {
     }
     const r = data.result || data;
     showResult(r.status, r, data);
+    registerSource(data, r);
   } catch (e) {
     showResult("invalid", { error: `请求失败: ${e}`, loc: "$" });
   }
 }
+
+// ------------------------------------------------------------ 低扰动改线
+const MAX_MODS = 6;
+
+function registerSource(envelope, r) {
+  // 只有带稳定审计标识且 optimal 的求解结果才能作为改线来源
+  if (r.status === "optimal" && envelope?.audit_id) {
+    lastSource = { auditId: envelope.audit_id, result: r };
+    rerouteCard.classList.remove("hidden");
+    resetModRows();
+  } else {
+    lastSource = null;
+    rerouteCard.classList.add("hidden");
+    rerouteResultCard.classList.add("hidden");
+  }
+}
+
+function addModRow(pipeId = "") {
+  if (modBody.rows.length >= MAX_MODS) return;
+  const tr = el("tr");
+  const pipeSel = el("select");
+  pipeSel.appendChild(el("option", { value: "", text: "选择管路…" }));
+  if (lastSource) {
+    for (const e of lastSource.result.edges)
+      pipeSel.appendChild(el("option", { value: e.id, text: e.id }));
+  }
+  if (pipeId) pipeSel.value = pipeId;
+  const mkInt = () => el("input", { type: "text", inputmode: "integer", placeholder: "不覆盖" });
+  const loIn = mkInt(), hiIn = mkInt(), costIn = mkInt();
+  tr.appendChild(el("td", {}, pipeSel));
+  tr.appendChild(el("td", {}, loIn));
+  tr.appendChild(el("td", {}, hiIn));
+  tr.appendChild(el("td", {}, costIn));
+  tr.appendChild(el("td", {}, el("button", {
+    type: "button", text: "删除",
+    onclick: () => tr.remove(),
+  })));
+  modBody.appendChild(tr);
+}
+
+function resetModRows() {
+  modBody.innerHTML = "";
+  addModRow();
+  reroutePreview.textContent = "";
+}
+
+function buildReroutePayload() {
+  if (!lastSource) throw { loc: "source_audit_id", message: "缺少 optimal 来源审计记录" };
+  const mods = [];
+  const seen = new Set();
+  [...modBody.rows].forEach((row, i) => {
+    const sel = row.querySelector("select");
+    const ins = row.querySelectorAll("input");
+    if (!sel.value) throw { loc: `modifications[${i}].pipe`, message: "请选择管路标识" };
+    if (seen.has(sel.value))
+      throw { loc: `modifications[${i}].pipe`, message: `管路覆盖重复: ${sel.value}` };
+    seen.add(sel.value);
+    const item = { pipe: sel.value };
+    const fields = [["lo", ins[0]], ["hi", ins[1]], ["cost", ins[2]]];
+    let given = 0;
+    for (const [fld, inp] of fields) {
+      const t = inp.value.trim();
+      if (t) { item[fld] = safeInt(t, `modifications[${i}].${fld}`); given++; }
+    }
+    if (!given) throw { loc: `modifications[${i}]`, message: "每项至少覆盖一个字段" };
+    mods.push(item);
+  });
+  if (!mods.length) throw { loc: "modifications", message: "至少给出一条覆盖项" };
+  return { source_audit_id: lastSource.auditId, modifications: mods };
+}
+
+function renderRerouteOptimal(r, envelope) {
+  rerouteBanner.appendChild(el("div", { class: "banner optimal",
+    text: `✓ 改线完成：修订成本 ${r.total_cost}，总绝对改变量 ${
+      r.objectives.level2_total_abs_change}` +
+      (envelope?.replayed ? "（审计重放原记录）" : "") }));
+
+  const boxes = el("div", { class: "kv" },
+    el("div", { class: "box" },
+      el("div", { class: "label", text: "一级：修订最小成本" }),
+      el("div", { class: "value", text: r.objectives.level1_revised_cost })),
+    el("div", { class: "box" },
+      el("div", { class: "label", text: "二级：总绝对改变量 Σ|新−原|" }),
+      el("div", { class: "value", text: r.objectives.level2_total_abs_change })),
+    el("div", { class: "box" },
+      el("div", { class: "label", text: "平局裁决" }),
+      el("div", { style: "font-size:12px", text: "原管路标识序流量向量字典序最小" })));
+  rerouteBody.appendChild(boxes);
+
+  // 修改项与原/新流量对照
+  const srcEdges = Object.fromEntries(r.frozen.source_pipes.map(p => [p.id, p]));
+  const newEdges = Object.fromEntries(r.frozen.revised_pipes.map(p => [p.id, p]));
+  const modMap = {};
+  for (const m of r.frozen.modifications) modMap[m.pipe] = m;
+
+  const cellBound = (id, edge, fld) => {
+    const overridden = modMap[id] && fld in modMap[id];
+    return el("td", { class: overridden ? "changed mono" : "mono",
+      text: String(edge[fld]) });
+  };
+  const rows = r.changes_core.map(c => {
+    const se = srcEdges[c.id], ne = newEdges[c.id];
+    return el("tr", { class: c.abs_change ? "" : "unchanged" },
+      el("td", { class: "mono", text: c.id }),
+      el("td", { text: `${se.from} → ${se.to}` }),
+      cellBound(c.id, se, "lo"), cellBound(c.id, ne, "lo"),
+      cellBound(c.id, se, "hi"), cellBound(c.id, ne, "hi"),
+      cellBound(c.id, se, "cost"), cellBound(c.id, ne, "cost"),
+      el("td", { class: "mono", text: c.source_flow }),
+      el("td", { class: c.abs_change ? "changed mono" : "mono", text: c.new_flow }),
+      el("td", { class: "mono", text: c.delta }),
+      el("td", { class: "mono", text: c.abs_change }));
+  });
+  rerouteBody.appendChild(el("h3", { text: "逐管对照（黄底=本次覆盖字段或流量改变）" }));
+  rerouteBody.appendChild(el("div", { class: "table-wrap" },
+    el("table", { class: "result" },
+      el("thead", {}, el("tr", {},
+        ...["管路", "方向", "原 lo", "新 lo", "原 hi", "新 hi",
+            "原 cost", "新 cost", "原流量", "新流量", "Δ", "|Δ|"]
+          .map(t => el("th", { text: t })))),
+      el("tbody", {}, ...rows))));
+
+  // 两级目标的独立复算证据
+  const pe = r.perturbation_evidence;
+  const arcRows = pe.arcs.map(a => el("tr", {},
+    el("td", { class: "mono", text: a.pipe }),
+    el("td", { text: `${a.from}→${a.to}` }),
+    el("td", { text: a.direction === "forward" ? "正向" : "反向" }),
+    el("td", { class: "hint", style: "font-size:12px",
+      text: a.segment === "toward_source" ? "朝来源流量" : "远离来源流量" }),
+    el("td", { class: "mono", text: a.capacity }),
+    el("td", { class: "mono", text: a.cost }),
+    el("td", { class: rcClass(a.reduced_cost) + " mono", text: a.reduced_cost }),
+    el("td", { class: "mono", text: a.w2 }),
+    el("td", { class: a.reduced_w2 == null ? "hint mono" :
+                   rcClass(a.reduced_w2) + " mono",
+      text: a.reduced_w2 == null ? "—" : a.reduced_w2 }),
+    el("td", { class: "mono", style: "font-size:12px",
+      text: a.lex_slack == null ? "—" : `[${a.lex_slack.join(", ")}]` })));
+  rerouteBody.appendChild(el("h3", {
+    text: "每条正残量分段弧的字典序约化费用（成本势 π / 扰动势 p / 字典序势 q）" }));
+  rerouteBody.appendChild(el("details", {},
+    el("summary", { text: "三级最优性如何独立复算？" }),
+    el("ul", {}, ...pe.explained.map(t => el("li", { style: "font-size:13px", text: t })))));
+  rerouteBody.appendChild(el("div", { class: "table-wrap" },
+    el("table", { class: "result" },
+      el("thead", {}, el("tr", {},
+        ...["管路", "弧", "方向", "分段", "容量", "弧成本",
+            "成本约化 c+πu−πv", "w2", "扰动约化 w2+pu−pv", "字典序松弛 q"]
+          .map(t => el("th", { text: t })))),
+      el("tbody", {}, ...arcRows))));
+
+  const stRows = Object.entries(pe.potentials).map(([s]) => el("tr", {},
+    el("td", { text: s }),
+    el("td", { class: "mono", text: pe.potentials[s] }),
+    el("td", { class: "mono", text: pe.perturbation_potentials[s] }),
+    el("td", { class: "mono", style: "font-size:12px",
+      text: `[${pe.lex_potentials[s].join(", ")}]` })));
+  rerouteBody.appendChild(el("details", {},
+    el("summary", { text: "成对站点势：π（成本）/ p（扰动）/ q（字典序向量）" }),
+    el("div", { class: "table-wrap" },
+      el("table", { class: "result" },
+        el("thead", {}, el("tr", {},
+          el("th", { text: "站点" }), el("th", { text: "π" }),
+          el("th", { text: "p" }), el("th", { text: "q（按管路标识序）" }))),
+        el("tbody", {}, ...stRows)))));
+
+  const nodeOk = r.node_check.every(n => n.ok);
+  rerouteBody.appendChild(el("p", { class: nodeOk ? "ok" : "bad",
+    text: nodeOk ? "逐站净供需复算全部通过（相同供需，仅改界/成本）。"
+                 : "存在站点净供需不满足！" }));
+}
+
+function showReroute(kind, r, envelope) {
+  rerouteResultCard.classList.remove("hidden");
+  rerouteBody.innerHTML = "";
+  rerouteBanner.innerHTML = "";
+  if (kind === "optimal") renderRerouteOptimal(r, envelope);
+  else if (kind === "infeasible") {
+    rerouteBanner.appendChild(el("div", { class: "banner infeasible",
+      text: "✗ 覆盖后修订网络无可行流（下界消去证据，可独立复算）" }));
+    const rows = (r.unmet_demand || []).map(u => el("tr", {},
+      el("td", { text: u.station }),
+      el("td", { class: "mono", text: u.required }),
+      el("td", { class: "mono bad", text: u.unsatisfied })));
+    if (rows.length) {
+      rerouteBody.appendChild(el("h3", { text: "未满足需求（超源汇侧弧残余）" }));
+      rerouteBody.appendChild(el("div", { class: "table-wrap" },
+        el("table", { class: "result" },
+          el("thead", {}, el("tr", {},
+            el("th", { text: "站点" }), el("th", { text: "需要量" }),
+            el("th", { text: "未满足量" }))),
+          el("tbody", {}, ...rows))));
+    }
+    rerouteBody.appendChild(el("h3", { text: "残量可达站点（失败 cut 证据）" }));
+    rerouteBody.appendChild(el("p", { class: "mono",
+      text: (r.reachable_from_source || []).join(", ") || "（空）" }));
+  } else {
+    rerouteBanner.appendChild(el("div", { class: "banner invalid",
+      text: "⚠ 改线请求被拒绝" }));
+    rerouteBody.appendChild(el("p", {},
+      el("b", { class: "bad", text: "输入非法：" }),
+      el("span", { class: "mono", text: ` ${r.loc} — ${r.error}` })));
+  }
+  rerouteResultCard.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function submitReroute() {
+  let payload;
+  try {
+    payload = buildReroutePayload();
+  } catch (e) {
+    showReroute("invalid", { error: e.message, loc: e.loc });
+    return;
+  }
+  reroutePreview.textContent = JSON.stringify(payload, null, 2);
+  const auditId = document.querySelector("#rerouteAuditId").value.trim();
+  if (!auditId) {
+    showReroute("invalid", {
+      error: "改线必须提交稳定改线审计标识（用于重放与读取）",
+      loc: "audit_id",
+    });
+    return;
+  }
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (auditId) headers["X-Audit-Id"] = auditId;
+    const resp = await fetch("/api/reroute", {
+      method: "POST", headers, body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (resp.status === 400 || resp.status === 404 || resp.status === 409) {
+      const r = data.result && data.status === "invalid" ? data.result : data;
+      showReroute("invalid", { error: r.error, loc: r.loc || "audit_id" }, data);
+      return;
+    }
+    showReroute(data.result.status, data.result, data);
+  } catch (e) {
+    showReroute("invalid", { error: `请求失败: ${e}`, loc: "$" });
+  }
+}
+
+async function loadRerouteRecord() {
+  const auditId = document.querySelector("#rerouteAuditId").value.trim();
+  if (!auditId) {
+    showReroute("invalid", { error: "请先填写改线审计标识", loc: "audit_id" });
+    return;
+  }
+  try {
+    const resp = await fetch(`/api/records/${encodeURIComponent(auditId)}`);
+    const data = await resp.json();
+    if (resp.status !== 200) {
+      showReroute("invalid", { error: data.error || "记录不存在", loc: "audit_id" });
+      return;
+    }
+    const r = data.result;
+    if (data.status === "optimal" && !r.frozen) {
+      showReroute("invalid",
+        { error: `标识 ${auditId} 是一条原始求解记录，不是改线审计记录`,
+          loc: "audit_id" });
+      return;
+    }
+    showReroute(data.status === "optimal" ? "optimal"
+              : data.status === "infeasible" ? "infeasible" : "invalid",
+                r, { audit_id: data.audit_id, replayed: true });
+  } catch (e) {
+    showReroute("invalid", { error: `请求失败: ${e}`, loc: "$" });
+  }
+}
+
+document.querySelector("#addMod").onclick = () => addModRow();
+document.querySelector("#submitReroute").onclick = submitReroute;
+document.querySelector("#loadRerouteRec").onclick = loadRerouteRecord;
 
 function showResult(kind, r, envelope) {
   resultCard.classList.remove("hidden");
