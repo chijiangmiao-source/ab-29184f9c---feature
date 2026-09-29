@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>低温光谱仪校准液路 · 最小费用流复算台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>低温光谱仪校准液路</h1>
+  <p class="sub">带上下界的精确整数最小费用流 · 站点势与约化成本复算证据</p>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. 审计标识（可选，稳定重传）</h2>
+    <p class="hint">填写后，<b>同标识 + 同载荷</b>重传直接返回原记录；<b>同标识 + 改载荷</b>将被拒绝(409)。</p>
+    <input id="auditId" type="text" maxlength="64" placeholder="例如 run-2026-09-27-A（字母/数字/._-）">
+  </section>
+
+  <section class="card">
+    <h2>2. 阀站（至多 12 个，整数供需）</h2>
+    <div class="table-wrap">
+      <table id="stationTable">
+        <thead><tr><th>站点标识</th><th>净供给 balance</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="row">
+      <button type="button" id="addStation">＋ 增加站点</button>
+      <span class="hint">正=净供给，负=净需求；各站总和必须为 0</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>3. 有向管路（至多 36 条，稳定标识）</h2>
+    <div class="table-wrap">
+      <table id="pipeTable">
+        <thead><tr>
+          <th>管路标识</th><th>起点 from</th><th>终点 to</th>
+          <th>下界 lo</th><th>上界 hi</th><th>单位成本 cost</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="row">
+      <button type="button" id="addPipe">＋ 增加管路</button>
+      <button type="button" id="loadSample">载入示例</button>
+      <button type="button" id="clearAll">清空</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>4. 提交</h2>
+    <div class="row">
+      <button type="button" id="submitBtn" class="primary">经真实 API 求解</button>
+      <span id="counter" class="hint"></span>
+    </div>
+    <pre id="requestPreview" class="preview"></pre>
+  </section>
+
+  <section id="resultCard" class="card hidden">
+    <h2>5. 结果与证据</h2>
+    <div id="statusBanner"></div>
+    <div id="resultBody"></div>
+  </section>
+</main>
+
+<footer>后端：下界消去 → Dinic 可行流 → Bellman-Ford 负环消除（精确整数，不限轮次）</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>
